@@ -57,6 +57,16 @@ def test_duplicate_name_is_rejected(two_clients):
     assert "Alice" in error_event["args"][0]["message"]
 
 
+def test_changing_name_frees_old_name(client, two_clients):
+    a, b = two_clients
+    a.emit("register", {"user": "Sandra"})
+    a.emit("register", {"user": "Jesus"})  # Sandra changes name
+    # Sandra should now be available
+    b.emit("register", {"user": "Sandra"})
+    assert online_users.get("Sandra") is not None
+    assert online_users.get("Jesus") is not None
+
+
 def test_duplicate_name_does_not_overwrite_original(two_clients):
     a, b = two_clients
     a.emit("register", {"user": "Alice"})

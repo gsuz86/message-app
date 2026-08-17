@@ -76,9 +76,13 @@ def handle_connect():
 @socketio.on("register")
 def handle_register(data):
     name = data["user"]
-    if name in online_users:
+    if name in online_users and online_users[name] != request.sid:
         emit("register_error", {"message": f'"{name}" is already taken. Pick another.'})
         return
+    # Remove the old name for this socket before registering the new one.
+    old_name = next((u for u, sid in online_users.items() if sid == request.sid), None)
+    if old_name:
+        del online_users[old_name]
     online_users[name] = request.sid
     emit("users", list(online_users.keys()), broadcast=True)
 
