@@ -1,6 +1,6 @@
 # Flask: the web framework — handles HTTP routes and serves the HTML page.
 # render_template: reads a file from the /templates folder and returns it as an HTTP response.
-from flask import Flask, render_template
+from flask import Flask, render_template, request
 from flask_socketio import SocketIO, emit
 
 app = Flask(__name__)
@@ -26,7 +26,6 @@ def handle_connect():
 # Client emits "register" after picking a name so the server knows who they are.
 @socketio.on("register")
 def handle_register(data):
-    from flask_socketio import request
     online_users[data["user"]] = request.sid
     # Broadcast the updated user list to everyone.
     emit("users", list(online_users.keys()), broadcast=True)
@@ -34,7 +33,6 @@ def handle_register(data):
 
 @socketio.on("disconnect")
 def handle_disconnect():
-    from flask_socketio import request
     # Remove the user that just left and notify everyone.
     user = next((u for u, sid in online_users.items() if sid == request.sid), None)
     if user:
@@ -53,7 +51,6 @@ def handle_message(data):
 # Direct message: only delivered to sender and recipient.
 @socketio.on("dm")
 def handle_dm(data):
-    from flask_socketio import request
     recipient_sid = online_users.get(data["to"])
     payload = {"from": data["from"], "to": data["to"], "text": data["text"]}
     if recipient_sid:
