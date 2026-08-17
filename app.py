@@ -9,16 +9,37 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 MAX_HISTORY = 50
 history = []
 
+# Maps username -> socket id so we can target specific people.
+online_users = {}
+
 
 @app.route("/")
 def index():
     return render_template("index.html")
 
 
-# When a client connects, send them the existing message history.
 @socketio.on("connect")
 def handle_connect():
     emit("history", history)
+
+
+# Client emits "register" after picking a name so the server knows who they are.
+@socketio.on("register")
+def handle_register(data):
+    from flask_socketio import request
+    online_users[data["user"]] = request.sid
+    # Broadcast the updated user list to everyone.
+    emit("users", list(online_users.keys()), broadcast=True)
+
+
+@socketio.on("disconnect")
+def handle_disconnect():
+    from flask_socketio import request
+    # Remove the user that just left and notify everyone.
+    user = next((u for u, sid in online_users.items() if sid == request.sid), None)
+    if user:
+        del online_users[user]
+        emit("users", list(online_users.keys()), broadcast=True)
 
 
 @socketio.on("message")
@@ -27,6 +48,18 @@ def handle_message(data):
     if len(history) > MAX_HISTORY:
         history.pop(0)
     emit("message", data, broadcast=True)
+
+
+# Direct message: only delivered to sender and recipient.
+@socketio.on("dm")
+def handle_dm(data):
+    from flask_socketio import request
+    recipient_sid = online_users.get(data["to"])
+    payload = {"from": data["from"], "to": data["to"], "text": data["text"]}
+    if recipient_sid:
+        emit("dm", payload, to=recipient_sid)
+    # Always echo back to sender so they see their own DM.
+    emit("dm", payload, to=request.sid)
 
 
 # Standard Python entry point: only runs when you execute `python app.py` directly.
