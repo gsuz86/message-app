@@ -4,43 +4,116 @@
   <meta charset="utf-8" />
   <title>Chat</title>
   <style>
-    body { font-family: sans-serif; max-width: 500px; margin: 2rem auto; }
-    #messages { border: 1px solid #ccc; height: 300px; overflow-y: auto; padding: 8px; }
+    * { box-sizing: border-box; }
+    body { font-family: sans-serif; max-width: 500px; margin: 2rem auto; padding: 0 1rem; }
+    #messages { border: 1px solid #ccc; height: 300px; overflow-y: auto; padding: 8px; margin-bottom: 8px; }
     #messages div { margin: 4px 0; }
-    input { padding: 6px; }
-    #text { width: 70%; }
+    #messages .meta { font-weight: bold; }
+    #input-row { display: flex; gap: 6px; }
+    #text { flex: 1; padding: 6px; }
+    button { padding: 6px 12px; cursor: pointer; }
+
+    /* Name picker overlay */
+    #picker-overlay {
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.5);
+      display: flex; align-items: center; justify-content: center;
+    }
+    #picker-box {
+      background: white; padding: 2rem; border-radius: 8px;
+      min-width: 260px; text-align: center;
+    }
+    #picker-box h3 { margin-top: 0; }
+    #name-list { list-style: none; padding: 0; margin: 1rem 0; }
+    #name-list li {
+      padding: 8px 12px; margin: 4px 0;
+      border: 1px solid #ccc; border-radius: 4px;
+      cursor: pointer;
+    }
+    #name-list li:hover { background: #f0f0f0; }
+    #current-user { font-size: 0.85rem; color: #666; margin-bottom: 6px; }
+    #change-name { font-size: 0.8rem; background: none; border: none; color: #888; cursor: pointer; text-decoration: underline; padding: 0; }
   </style>
 </head>
 <body>
   <h2>Simple Chat</h2>
-  <label>Your name: <input id="name" value="anon" /></label>
+
+  <div id="picker-overlay">
+    <div id="picker-box">
+      <h3>Pick your name</h3>
+      <ul id="name-list"></ul>
+    </div>
+  </div>
+
+  <div id="current-user"></div>
+  <button id="change-name">change name</button>
   <div id="messages"></div>
-  <input id="text" placeholder="Type a message..." />
-  <button id="send">Send</button>
+  <div id="input-row">
+    <input id="text" placeholder="Type a message..." />
+    <button id="send">Send</button>
+  </div>
 
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
   <script>
+    const NAMES = [
+      "Alice", "Bob", "Carol", "Dave", "Eve",
+      "Frank", "Grace", "Hank", "Iris", "Jake"
+    ];
+
     const socket = io();
     const messages = document.getElementById("messages");
     const text = document.getElementById("text");
-    const name = document.getElementById("name");
+    const overlay = document.getElementById("picker-overlay");
+    const nameList = document.getElementById("name-list");
+    const currentUserEl = document.getElementById("current-user");
 
-    socket.on("message", (msg) => {
+    let username = localStorage.getItem("chat-username");
+
+    function showPicker() {
+      nameList.innerHTML = "";
+      NAMES.forEach(name => {
+        const li = document.createElement("li");
+        li.textContent = name;
+        li.onclick = () => chooseName(name);
+        nameList.appendChild(li);
+      });
+      overlay.style.display = "flex";
+    }
+
+    function chooseName(name) {
+      username = name;
+      localStorage.setItem("chat-username", name);
+      overlay.style.display = "none";
+      currentUserEl.textContent = `You are: ${name}`;
+    }
+
+    function addMessage(msg) {
       const div = document.createElement("div");
-      div.textContent = `${msg.user}: ${msg.text}`;
+      div.innerHTML = `<span class="meta">${msg.user}:</span> ${msg.text}`;
       messages.appendChild(div);
       messages.scrollTop = messages.scrollHeight;
-    });
+    }
+
+    socket.on("history", (msgs) => msgs.forEach(addMessage));
+    socket.on("message", addMessage);
 
     function send() {
       const value = text.value.trim();
-      if (!value) return;
-      socket.emit("message", { user: name.value || "anon", text: value });
+      if (!value || !username) return;
+      socket.emit("message", { user: username, text: value });
       text.value = "";
     }
 
     document.getElementById("send").onclick = send;
+    document.getElementById("change-name").onclick = showPicker;
     text.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+
+    if (username) {
+      overlay.style.display = "none";
+      currentUserEl.textContent = `You are: ${username}`;
+    } else {
+      showPicker();
+    }
   </script>
 </body>
 </html>
