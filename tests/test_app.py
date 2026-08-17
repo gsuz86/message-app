@@ -1,13 +1,17 @@
 import pytest
-from app import app, socketio, history, online_users
+from app import app, socketio, online_users, init_db, load_history, save_message, DB_PATH
+import os
 
 
 @pytest.fixture(autouse=True)
-def reset_state():
-    """Clear server state before each test so tests don't bleed into each other."""
-    history.clear()
+def reset_state(tmp_path, monkeypatch):
+    """Use a fresh temp database and clear in-memory state before each test."""
+    test_db = str(tmp_path / "test.db")
+    monkeypatch.setattr("app.DB_PATH", test_db)
     online_users.clear()
+    init_db()
     yield
+    online_users.clear()
 
 
 @pytest.fixture
@@ -37,17 +41,28 @@ def test_register_notifies_all_connected_clients(two_clients):
     b.emit("register", {"user": "Bob"})
 
     b_events = [e for e in b.get_received() if e["name"] == "users"]
-    # Bob should have seen Alice join, then himself join
     assert len(b_events) == 2
     assert "Bob" in b_events[-1]["args"][0]
     assert "Alice" in b_events[-1]["args"][0]
 
 
-def test_duplicate_name_overwrites_previous(two_clients):
+def test_duplicate_name_is_rejected(two_clients):
     a, b = two_clients
     a.emit("register", {"user": "Alice"})
     b.emit("register", {"user": "Alice"})
-    assert len(online_users) == 1  # only one entry for "Alice"
+
+    received = b.get_received()
+    error_event = next((e for e in received if e["name"] == "register_error"), None)
+    assert error_event is not None
+    assert "Alice" in error_event["args"][0]["message"]
+
+
+def test_duplicate_name_does_not_overwrite_original(two_clients):
+    a, b = two_clients
+    a.emit("register", {"user": "Alice"})
+    original_sid = online_users["Alice"]
+    b.emit("register", {"user": "Alice"})
+    assert online_users["Alice"] == original_sid
 
 
 # --- Disconnect ---
@@ -64,7 +79,7 @@ def test_message_is_broadcast_to_all(two_clients):
     a, b = two_clients
     a.emit("register", {"user": "Alice"})
     b.emit("register", {"user": "Bob"})
-    b.get_received()  # clear B's queue
+    b.get_received()
 
     a.emit("message", {"user": "Alice", "text": "hello"})
     received = b.get_received()
@@ -75,12 +90,13 @@ def test_message_is_broadcast_to_all(two_clients):
 
 def test_message_is_stored_in_history(client):
     client.emit("message", {"user": "Alice", "text": "hello"})
+    history = load_history()
     assert len(history) == 1
     assert history[0]["text"] == "hello"
 
 
 def test_history_is_sent_on_connect(client):
-    history.append({"user": "Alice", "text": "old message"})
+    save_message("Alice", "old message")
     new_client = socketio.test_client(app)
     received = new_client.get_received()
     history_event = next(e for e in received if e["name"] == "history")
@@ -90,8 +106,9 @@ def test_history_is_sent_on_connect(client):
 def test_history_capped_at_50_messages(client):
     for i in range(60):
         client.emit("message", {"user": "Alice", "text": f"msg {i}"})
+    history = load_history()
     assert len(history) == 50
-    assert history[0]["text"] == "msg 10"  # oldest 10 were dropped
+    assert history[0]["text"] == "msg 10"
 
 
 # --- Direct messages ---
@@ -100,7 +117,7 @@ def test_dm_is_received_by_recipient(two_clients):
     a, b = two_clients
     a.emit("register", {"user": "Alice"})
     b.emit("register", {"user": "Bob"})
-    b.get_received()  # clear queue
+    b.get_received()
 
     a.emit("dm", {"from": "Alice", "to": "Bob", "text": "hey"})
     received = b.get_received()
@@ -112,7 +129,7 @@ def test_dm_is_echoed_back_to_sender(two_clients):
     a, b = two_clients
     a.emit("register", {"user": "Alice"})
     b.emit("register", {"user": "Bob"})
-    a.get_received()  # clear queue
+    a.get_received()
 
     a.emit("dm", {"from": "Alice", "to": "Bob", "text": "hey"})
     received = a.get_received()
@@ -126,16 +143,14 @@ def test_dm_is_not_received_by_third_party(two_clients):
     a.emit("register", {"user": "Alice"})
     b.emit("register", {"user": "Bob"})
     c.emit("register", {"user": "Carol"})
-    c.get_received()  # clear queue
+    c.get_received()
 
     a.emit("dm", {"from": "Alice", "to": "Bob", "text": "secret"})
     received = c.get_received()
-    dm_events = [e for e in received if e["name"] == "dm"]
-    assert len(dm_events) == 0
+    assert not any(e["name"] == "dm" for e in received)
 
 
 def test_dm_to_offline_user_does_not_crash(client):
     client.emit("register", {"user": "Alice"})
     client.get_received()
-    # Bob is not connected — should not raise an exception
     client.emit("dm", {"from": "Alice", "to": "Bob", "text": "hey"})

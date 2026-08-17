@@ -1,16 +1,66 @@
-# Flask: the web framework — handles HTTP routes and serves the HTML page.
-# render_template: reads a file from the /templates folder and returns it as an HTTP response.
-from flask import Flask, render_template, request
+import sqlite3
+from flask import Flask, render_template, request, g
 from flask_socketio import SocketIO, emit
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 MAX_HISTORY = 50
-history = []
-
-# Maps username -> socket id so we can target specific people.
 online_users = {}
+
+DB_PATH = "chat.db"
+
+
+def get_db():
+    if "db" not in g:
+        g.db = sqlite3.connect(DB_PATH)
+        g.db.row_factory = sqlite3.Row
+    return g.db
+
+
+@app.teardown_appcontext
+def close_db(e=None):
+    db = g.pop("db", None)
+    if db:
+        db.close()
+
+
+def init_db():
+    with app.app_context():
+        db = sqlite3.connect(DB_PATH)
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user TEXT NOT NULL,
+                text TEXT NOT NULL,
+                ts DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        db.commit()
+        db.close()
+
+
+def load_history():
+    db = sqlite3.connect(DB_PATH)
+    db.row_factory = sqlite3.Row
+    rows = db.execute(
+        "SELECT user, text FROM messages ORDER BY id DESC LIMIT ?", (MAX_HISTORY,)
+    ).fetchall()
+    db.close()
+    return [{"user": r["user"], "text": r["text"]} for r in reversed(rows)]
+
+
+def save_message(user, text):
+    db = sqlite3.connect(DB_PATH)
+    db.execute("INSERT INTO messages (user, text) VALUES (?, ?)", (user, text))
+    # Keep only the last MAX_HISTORY rows to avoid unbounded growth.
+    db.execute("""
+        DELETE FROM messages WHERE id NOT IN (
+            SELECT id FROM messages ORDER BY id DESC LIMIT ?
+        )
+    """, (MAX_HISTORY,))
+    db.commit()
+    db.close()
 
 
 @app.route("/")
@@ -20,20 +70,21 @@ def index():
 
 @socketio.on("connect")
 def handle_connect():
-    emit("history", history)
+    emit("history", load_history())
 
 
-# Client emits "register" after picking a name so the server knows who they are.
 @socketio.on("register")
 def handle_register(data):
-    online_users[data["user"]] = request.sid
-    # Broadcast the updated user list to everyone.
+    name = data["user"]
+    if name in online_users:
+        emit("register_error", {"message": f'"{name}" is already taken. Pick another.'})
+        return
+    online_users[name] = request.sid
     emit("users", list(online_users.keys()), broadcast=True)
 
 
 @socketio.on("disconnect")
 def handle_disconnect():
-    # Remove the user that just left and notify everyone.
     user = next((u for u, sid in online_users.items() if sid == request.sid), None)
     if user:
         del online_users[user]
@@ -42,27 +93,19 @@ def handle_disconnect():
 
 @socketio.on("message")
 def handle_message(data):
-    history.append(data)
-    if len(history) > MAX_HISTORY:
-        history.pop(0)
+    save_message(data["user"], data["text"])
     emit("message", data, broadcast=True)
 
 
-# Direct message: only delivered to sender and recipient.
 @socketio.on("dm")
 def handle_dm(data):
     recipient_sid = online_users.get(data["to"])
     payload = {"from": data["from"], "to": data["to"], "text": data["text"]}
     if recipient_sid:
         emit("dm", payload, to=recipient_sid)
-    # Always echo back to sender so they see their own DM.
     emit("dm", payload, to=request.sid)
 
 
-# Standard Python entry point: only runs when you execute `python app.py` directly.
 if __name__ == "__main__":
-    # socketio.run starts the server (not app.run) because we need WebSocket support.
-    # host="0.0.0.0" -> listen on all network interfaces (accessible from other devices on your LAN).
-    # port=3000     -> the port to listen on.
-    # debug=True    -> auto-reload on code changes + show detailed errors.
+    init_db()
     socketio.run(app, host="0.0.0.0", port=3000, debug=True, allow_unsafe_werkzeug=True)
